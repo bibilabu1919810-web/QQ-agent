@@ -65,7 +65,7 @@ const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 // ── 本地图片生成（可选，默认关闭）────────────────────────────────────
 // 只跟本机/局域网内的绘图服务说话，地址来自用户配置而非模型输入，所以这里显式允许
 // 内网；safe-fetch 的默认策略一个字没改。
-const imageGenLastAt = new Map(); // chatKey -> 上次生成完成的时间戳
+const imageGenLastAt = new Map(); // 冷却键（chatKey:userId，拿不到 userId 时退化成 chatKey）-> 上次生成完成的时间戳
 
 async function drawingServiceFetch(baseUrl, path, { method = 'GET', body = null, timeoutMs = 15000 } = {}) {
   const url = new URL(path, baseUrl).toString();
@@ -549,6 +549,20 @@ export function buildToolDefs() {
 }
 
 /**
+ * 本次生成是谁要的（QQ 号）。拿不到返回 null。
+ *
+ * 来源是本次唤醒的触发消息列表 —— 正常对话下最后一条就是正在跟机器人说话的人。
+ * 主动开话题（proactive）时触发列表为空，返回 null，此时退化成按会话计冷却。
+ */
+function requesterIdOf(ctx) {
+  const trigger = ctx?.session?.trigger;
+  if (!Array.isArray(trigger) || !trigger.length) return null;
+  const last = trigger[trigger.length - 1];
+  const id = last?.senderId ?? last?.userId;
+  return id == null || String(id).trim() === '' ? null : String(id).trim();
+}
+
+/**
  * 本地图片生成工具。只在 imageGen.enabled 为 true 时才会被 buildToolDefs 加进来。
  *
  * 设计取舍：生成完直接发到当前会话，而不是把图片塞回工具结果 ——
@@ -557,12 +571,19 @@ export function buildToolDefs() {
 function generateImageDef() {
   return {
     name: 'generate_image',
-    description: '调用本机部署的绘图服务画一张图，并直接发到当前聊天。适用：群友明确要图（"帮我画…""来张…的图""生成一张…"）。prompt 必须写英文 danbooru 标签（例：1girl, silver hair, cherry blossoms, masterpiece, best quality）——先把对方的中文描述翻译成标签再传，不要直接传中文句子。生成需要几秒到一分钟，期间不用发"正在画"之类的消息。',
+    description: '调用本机部署的绘图服务画一张图，并直接发到当前聊天。适用：群友明确要图（"帮我画…""来张…的图""生成一张…"）。prompt 必须写英文 danbooru 标签（例：1girl, silver hair, cherry blossoms, masterpiece, best quality）——先把对方的中文描述翻译成标签再传，不要直接传中文句子。' +
+      '画面比例用 ratio 参数：默认 1:1；对方说"竖版 / 立绘 / 手机壁纸"就用 3:4 或 9:16，"横版 / 风景 / 宽屏"就用 4:3 或 16:9，"全身"用 2:3。' +
+      '生成需要几秒到一分钟，期间不用发"正在画"之类的消息。',
     parameters: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: '英文 danbooru 标签，逗号分隔' },
-        size: { type: 'integer', description: '边长像素，默认取配置；常用 512 / 768，范围 64~2048' },
+        ratio: {
+          type: 'string',
+          enum: ['1:1', '3:4', '4:3', '2:3', '3:2', '9:16', '16:9', '3:5', '5:3'],
+          description: '画面比例预设（推荐用它，不要自己算像素）。默认 1:1'
+        },
+        size: { type: 'integer', description: '可选：正方形边长（旧用法）。只有需要"非 512 的正方形"时才用；有比例需求请用 ratio' },
         steps: { type: 'integer', description: '采样步数，默认取配置；范围 1~150' },
         caption: { type: 'string', description: '可选：配在图片前面的中文一句话。不要写"已生成/请查收"这类汇报' }
       },
@@ -576,24 +597,33 @@ function generateImageDef() {
       const maxChars = cfg.maxPromptChars ?? 600;
       if (prompt.length > maxChars) return err(`prompt 过长（${prompt.length} > ${maxChars} 字符），请精简标签`);
 
+      const requester = requesterIdOf(ctx);
+      // 冷却按「人」而不是按「会话」：同一个群里 A 刚画完，不该把 B 也一起挡住
+      const cooldownKey = requester ? `${ctx.chatKey}:${requester}` : ctx.chatKey;
       const cooldown = cfg.cooldownMs ?? 60000;
-      const last = imageGenLastAt.get(ctx.chatKey) ?? 0;
+      const last = imageGenLastAt.get(cooldownKey) ?? 0;
       if (last && Date.now() - last < cooldown) {
-        return err(`这个会话刚生成过，请约 ${Math.ceil((cooldown - (Date.now() - last)) / 1000)} 秒后再画`);
+        return err(`刚生成过，请约 ${Math.ceil((cooldown - (Date.now() - last)) / 1000)} 秒后再画`);
       }
 
       const baseUrl = String(cfg.serviceUrl || '').trim();
       if (!baseUrl) return err('imageGen.serviceUrl 未配置');
 
+      const body = {
+        prompt,
+        steps: Number(args.steps) || cfg.defaultSteps || 20,
+        // 绘图服务用这两个字段记录来源 + 做「按人冷却」；拿不到就传 null
+        session_id: ctx.chatKey || null,
+        user_id: requester
+      };
+      if (args.ratio) body.ratio = String(args.ratio);
+      else body.size = Number(args.size) || cfg.defaultSize || 512;
+
       let jobId = '';
       try {
         const created = await drawingServiceFetch(baseUrl, '/api/v1/generate', {
           method: 'POST',
-          body: {
-            prompt,
-            size: Number(args.size) || cfg.defaultSize || 512,
-            steps: Number(args.steps) || cfg.defaultSteps || 20
-          },
+          body,
           timeoutMs: 20000
         });
         jobId = String(created?.job_id ?? '');
@@ -639,7 +669,7 @@ function generateImageDef() {
         return err(`图片发送失败：${error?.message ?? error}`);
       }
 
-      imageGenLastAt.set(ctx.chatKey, Date.now());
+      imageGenLastAt.set(cooldownKey, Date.now());
       return ok({
         sent: true,
         prompt,

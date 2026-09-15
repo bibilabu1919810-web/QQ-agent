@@ -38,7 +38,10 @@ function createMockDrawingService() {
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
       state.generates += 1;
       const jobId = `job${++state.nextId}`;
-      state.jobs.set(jobId, { prompt: body.prompt, size: body.size, steps: body.steps, polls: 0 });
+      state.jobs.set(jobId, {
+        prompt: body.prompt, size: body.size, steps: body.steps,
+        ratio: body.ratio, session_id: body.session_id, user_id: body.user_id, polls: 0
+      });
       return json(202, { job_id: jobId, position: 0, ready_eta: 0 });
     }
     const jobMatch = url.pathname.match(/^\/api\/v1\/job\/([A-Za-z0-9_-]+)$/);
@@ -70,12 +73,19 @@ function createMockDrawingService() {
   });
 }
 
-function makeCtx() {
+/**
+ * 造一个执行上下文。
+ * @param {string|null} requesterId 触发消息的发送者 QQ 号；null = 主动开话题（没有触发消息）
+ * @param {string} chatKey 会话键
+ */
+function makeCtx(requesterId = null, chatKey = 'group:123') {
   const sent = [];
   return {
     sent,
-    chatKey: 'group:123',
-    session: { id: 'sess-test' },
+    chatKey,
+    session: requesterId
+      ? { id: 'sess-test', trigger: [{ id: 1, senderId: requesterId, senderName: '群友', text: '帮我画一张' }] }
+      : { id: 'sess-test' },
     store: { appendSelf() {}, activeMembers: () => [], recent: () => [] },
     emit() {},
     sender: {
@@ -199,6 +209,70 @@ assert.ok(tool.description.includes('不要直接传中文'), '工具描述必�
   ctx.chatKey = 'group:999';
   const r = await tool.execute(ctx, { prompt: '1girl, no service' });
   assert.ok(r.isError && r.content.includes('连接绘图服务失败'), `应给出可读的失败原因：${r.content}`);
+}
+
+// ── 9. ratio 预设与来源字段透传 ──
+{
+  const cfg = baseCfg();
+  cfg.imageGen.cooldownMs = 0;
+  setRuntimeConfig(cfg);
+  const ctx = makeCtx('2968808382', 'group:ratio1');
+  const r = await tool.execute(ctx, { prompt: '1girl, vertical', ratio: '3:4' });
+  assert.ok(!r.isError, `ratio 生成不应失败：${r.content}`);
+  const req = [...mock.jobs.values()].at(-1);
+  assert.strictEqual(req.ratio, '3:4', 'ratio 应透传给绘图服务');
+  assert.strictEqual(req.size, undefined, '给了 ratio 就不该再传 size');
+  assert.strictEqual(req.session_id, 'group:ratio1', 'session_id 应是 chatKey');
+  assert.strictEqual(req.user_id, '2968808382', 'user_id 应是触发消息的发送者 QQ 号');
+
+  const tool9 = findTool(buildToolDefs());
+  const ratios = tool9.parameters.properties.ratio.enum;
+  assert.ok(ratios.includes('3:4') && ratios.includes('9:16'), 'ratio 参数应给出预设枚举');
+  assert.ok(tool9.description.includes('ratio'), '工具描述应告诉模型用 ratio 而不是自己算像素');
+}
+
+// ── 10. 冷却按「人」算：同一个群里换个人不该被前面那个人挡住 ──
+{
+  const cfg = baseCfg();
+  cfg.imageGen.cooldownMs = 60000;
+  setRuntimeConfig(cfg);
+  const a = makeCtx('111', 'group:shared');
+  const ra = await tool.execute(a, { prompt: '1girl, person A' });
+  assert.ok(!ra.isError, `A 首次应能生成：${ra.content}`);
+
+  const b = makeCtx('222', 'group:shared');
+  const rb = await tool.execute(b, { prompt: '1girl, person B' });
+  assert.ok(!rb.isError, `B 在同一个群里不应被 A 的冷却挡住：${rb.content}`);
+
+  const a2 = makeCtx('111', 'group:shared');
+  const ra2 = await tool.execute(a2, { prompt: '1girl, person A again' });
+  assert.ok(ra2.isError && ra2.content.includes('刚生成过'), 'A 自己第二次仍应被冷却挡住');
+}
+
+// ── 11. 主动开话题（没有触发消息）：user_id 为空，冷却退化成按会话 ──
+{
+  const cfg = baseCfg();
+  cfg.imageGen.cooldownMs = 0;
+  setRuntimeConfig(cfg);
+  const ctx = makeCtx(null, 'group:proactive');
+  const r = await tool.execute(ctx, { prompt: '1girl, proactive' });
+  assert.ok(!r.isError, `没有触发消息时也应能生成：${r.content}`);
+  const req = [...mock.jobs.values()].at(-1);
+  assert.strictEqual(req.user_id, null, '拿不到发送者时应传 null，不能瞎编');
+  assert.strictEqual(req.session_id, 'group:proactive', 'session_id 任何情况下都要有');
+}
+
+// ── 12. 不传 ratio 时退回旧的 size 字段（向后兼容） ──
+{
+  const cfg = baseCfg();
+  cfg.imageGen.cooldownMs = 0;
+  setRuntimeConfig(cfg);
+  const ctx = makeCtx('333', 'group:legacy');
+  const r = await tool.execute(ctx, { prompt: '1girl, legacy size', size: 640 });
+  assert.ok(!r.isError, `旧用法仍应可用：${r.content}`);
+  const req = [...mock.jobs.values()].at(-1);
+  assert.strictEqual(req.size, 640, '不传 ratio 时应继续用 size');
+  assert.strictEqual(req.ratio, undefined, '不该凭空造出 ratio');
 }
 
 await mock.close();
