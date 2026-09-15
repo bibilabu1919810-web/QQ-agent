@@ -39,8 +39,9 @@ function createMockDrawingService() {
       state.generates += 1;
       const jobId = `job${++state.nextId}`;
       state.jobs.set(jobId, {
-        prompt: body.prompt, size: body.size, steps: body.steps,
-        ratio: body.ratio, session_id: body.session_id, user_id: body.user_id, polls: 0
+        prompt: body.prompt, size: body.size, width: body.width, height: body.height,
+        steps: body.steps, ratio: body.ratio,
+        session_id: body.session_id, user_id: body.user_id, polls: 0
       });
       return json(202, { job_id: jobId, position: 0, ready_eta: 0 });
     }
@@ -273,6 +274,61 @@ assert.ok(tool.description.includes('不要直接传中文'), '工具描述必�
   const req = [...mock.jobs.values()].at(-1);
   assert.strictEqual(req.size, 640, '不传 ratio 时应继续用 size');
   assert.strictEqual(req.ratio, undefined, '不该凭空造出 ratio');
+}
+
+// ── 13. 模型没指定尺寸时，用配置里的默认比例 ──
+{
+  const cfg = baseCfg();
+  cfg.imageGen.cooldownMs = 0;
+  cfg.imageGen.defaultRatio = '3:4';
+  setRuntimeConfig(cfg);
+  const ctx = makeCtx('444', 'group:defaultratio');
+  const r = await tool.execute(ctx, { prompt: '1girl, default ratio' });
+  assert.ok(!r.isError, `用配置默认比例也应能生成：${r.content}`);
+  const req = [...mock.jobs.values()].at(-1);
+  assert.strictEqual(req.ratio, '3:4', '模型没给尺寸时应该用配置的 defaultRatio');
+  assert.strictEqual(req.size, undefined, '有 defaultRatio 就不该再传 size');
+}
+
+// ── 14. defaultRatio 为空时改用自定义宽高 ──
+{
+  const cfg = baseCfg();
+  cfg.imageGen.cooldownMs = 0;
+  cfg.imageGen.defaultRatio = '';
+  cfg.imageGen.defaultWidth = 640;
+  cfg.imageGen.defaultHeight = 384;
+  setRuntimeConfig(cfg);
+  const ctx = makeCtx('555', 'group:customwh');
+  const r = await tool.execute(ctx, { prompt: '1girl, custom width height' });
+  assert.ok(!r.isError, `自定义宽高也应能生成：${r.content}`);
+  const req = [...mock.jobs.values()].at(-1);
+  assert.strictEqual(req.width, 640, '自定义宽应透传');
+  assert.strictEqual(req.height, 384, '自定义高应透传');
+  assert.strictEqual(req.ratio, undefined, '没有 defaultRatio 就不该传 ratio');
+}
+
+// ── 15. 模型明确指定时压过配置默认 ──
+{
+  const cfg = baseCfg();
+  cfg.imageGen.cooldownMs = 0;
+  cfg.imageGen.defaultRatio = '1:1';
+  setRuntimeConfig(cfg);
+  const ctx = makeCtx('666', 'group:override');
+  const r = await tool.execute(ctx, { prompt: '1girl, override', ratio: '9:16' });
+  assert.ok(!r.isError, `模型指定比例时应能生成：${r.content}`);
+  const req = [...mock.jobs.values()].at(-1);
+  assert.strictEqual(req.ratio, '9:16', '模型给的比例应压过配置默认');
+}
+
+// ── 16. 默认配置本身要自洽（界面与后端读的是同一份 DEFAULT_CONFIG） ──
+{
+  const { DEFAULT_CONFIG } = await import('../src/config.js');
+  const ig = DEFAULT_CONFIG.imageGen;
+  assert.strictEqual(ig.enabled, false, '生图默认必须是关的');
+  assert.strictEqual(ig.defaultRatio, '1:1', '默认比例应为 1:1');
+  assert.ok(Number.isInteger(ig.defaultWidth) && Number.isInteger(ig.defaultHeight), '自定义宽高必须是整数');
+  assert.strictEqual(ig.defaultWidth % 8, 0, '默认宽必须是 8 的倍数');
+  assert.strictEqual(ig.defaultHeight % 8, 0, '默认高必须是 8 的倍数');
 }
 
 await mock.close();

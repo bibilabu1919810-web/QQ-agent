@@ -616,8 +616,15 @@ function generateImageDef() {
         session_id: ctx.chatKey || null,
         user_id: requester
       };
+      // 尺寸优先级：模型给的 ratio > 模型给的 size > 配置的默认 ratio >
+      // 配置的自定义宽高 > 旧的 defaultSize（兼容老配置）
       if (args.ratio) body.ratio = String(args.ratio);
-      else body.size = Number(args.size) || cfg.defaultSize || 512;
+      else if (args.size) body.size = Number(args.size);
+      else if (cfg.defaultRatio) body.ratio = String(cfg.defaultRatio);
+      else if (cfg.defaultWidth && cfg.defaultHeight) {
+        body.width = Number(cfg.defaultWidth);
+        body.height = Number(cfg.defaultHeight);
+      } else body.size = Number(cfg.defaultSize) || 512;
 
       let jobId = '';
       try {

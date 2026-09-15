@@ -156,9 +156,18 @@ export const DEFAULT_CONFIG = {
     serviceUrl: 'http://127.0.0.1:17777',
     // 冷启动绘图模型可能要 60~120 秒，整体超时必须放宽。
     timeoutMs: 300000,
+    // 默认画面比例。为了不用在两边各维护一份像素表，这里存**预设名**而不是像素——
+    // 预设表在绘图服务侧（sd_service.py 的 JobQueue.SIZE_PRESETS）。
+    // 留空则改用下面的 defaultWidth / defaultHeight。
+    defaultRatio: '1:1',
+    // 「自定义」长宽：只有 defaultRatio 为空时才生效，必须是 8 的倍数。
+    defaultWidth: 512,
+    defaultHeight: 512,
+    // 兼容旧配置：只在既没有 defaultRatio 也没有 defaultWidth 时兜底。
     defaultSize: 512,
     defaultSteps: 20,
-    // 同一会话两次生成的最小间隔（毫秒）：生图很重，防止模型连续触发。
+    // 同一个人两次生成的最小间隔（毫秒）：生图很重，防止模型连续触发。
+    // 注意是「按人」不是「按会话」——同一个群里换个人不该被前一个人挡住。
     cooldownMs: 60000,
     // 提示词长度上限，避免超长文本塞给绘图模型。
     maxPromptChars: 600
