@@ -3102,6 +3102,23 @@ return `
       <div class="field"><label>触发概率 0~1</label><input type="number" id="cfg-pro-prob" step="0.05" min="0" max="1" value="${esc(c.proactive.probability)}" /></div>
     </div>
 
+    <h3>生图模式</h3>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-imagegen" ${c.imageGen?.enabled ? 'checked' : ''} />
+      <label for="cfg-imagegen">启用生图（群友要图时调用本机绘图服务）</label></div>
+    <div class="field-row">
+      <div class="field"><label>绘图服务地址</label><input type="text" id="cfg-imagegen-url" value="${esc(c.imageGen?.serviceUrl ?? 'http://127.0.0.1:17777')}" /></div>
+      <div class="field"><label>默认边长（像素）</label><input type="number" id="cfg-imagegen-size" min="64" max="2048" value="${esc(c.imageGen?.defaultSize ?? 512)}" /></div>
+      <div class="field"><label>默认步数</label><input type="number" id="cfg-imagegen-steps" min="1" max="150" value="${esc(c.imageGen?.defaultSteps ?? 20)}" /></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>同会话冷却（毫秒）</label><input type="number" id="cfg-imagegen-cooldown" min="0" value="${esc(c.imageGen?.cooldownMs ?? 60000)}" /></div>
+      <div class="field"><label>生成超时（毫秒）</label><input type="number" id="cfg-imagegen-timeout" min="10000" value="${esc(c.imageGen?.timeoutMs ?? 300000)}" /></div>
+    </div>
+    <div class="hint">
+      关闭时这个工具不会出现在模型面前，连 token 都不花。开启前请先在本机跑起绘图服务；
+      绘图模型冷启动要 60~120 秒，所以「生成超时」默认给了 5 分钟。
+    </div>
+
     <h3>表情包</h3>
     <div class="checkbox-row"><input type="checkbox" id="cfg-sticker" ${c.sticker.enabled ? 'checked' : ''} />
       <label for="cfg-sticker">启用表情包（收藏表情同步 + 发送工具）</label></div>
@@ -4586,6 +4603,17 @@ async function saveConfig({ quiet = false } = {}) {
       checkIntervalMinMs: Number(val('#cfg-pro-min', c.proactive?.checkIntervalMinMs)) || 1800000,
       checkIntervalMaxMs: Number(val('#cfg-pro-max', c.proactive?.checkIntervalMaxMs)) || 5400000,
       probability: Number(val('#cfg-pro-prob', c.proactive?.probability)) || 0.25
+    };
+    patch.imageGen = {
+      ...c.imageGen,
+      enabled: chk('#cfg-imagegen', !!c.imageGen?.enabled),
+      // 地址必须是非空字符串，否则工具会拿它当「未配置」直接报错
+      serviceUrl: String(val('#cfg-imagegen-url', c.imageGen?.serviceUrl ?? '')).trim() || 'http://127.0.0.1:17777',
+      // 与 config.js 的 DEFAULT_CONFIG.imageGen 保持一致：512 / 20 / 60000 / 300000
+      defaultSize: Math.min(2048, Math.max(64, Number(val('#cfg-imagegen-size', c.imageGen?.defaultSize)) || 512)),
+      defaultSteps: Math.min(150, Math.max(1, Number(val('#cfg-imagegen-steps', c.imageGen?.defaultSteps)) || 20)),
+      cooldownMs: Number(val('#cfg-imagegen-cooldown', c.imageGen?.cooldownMs)) || 60000,
+      timeoutMs: Number(val('#cfg-imagegen-timeout', c.imageGen?.timeoutMs)) || 300000
     };
     patch.sticker = {
       ...c.sticker,
