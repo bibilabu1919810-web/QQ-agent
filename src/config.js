@@ -148,6 +148,21 @@ export const DEFAULT_CONFIG = {
     idleThresholdMs: 1800000,   // 群里静默多久才算"冷场"
     probability: 0.25
   },
+  // 本地图片生成（可选，默认关闭）。把绘图请求转给本机运行的绘图服务，
+  // 契约与部署方式见 PR 说明；没部署时保持 enabled:false 即可，工具不会暴露给模型。
+  imageGen: {
+    enabled: false,
+    // 绘图服务地址。允许本机/局域网地址 —— 它来自用户自己的配置，不是模型输入。
+    serviceUrl: 'http://127.0.0.1:17777',
+    // 冷启动绘图模型可能要 60~120 秒，整体超时必须放宽。
+    timeoutMs: 300000,
+    defaultSize: 512,
+    defaultSteps: 20,
+    // 同一会话两次生成的最小间隔（毫秒）：生图很重，防止模型连续触发。
+    cooldownMs: 60000,
+    // 提示词长度上限，避免超长文本塞给绘图模型。
+    maxPromptChars: 600
+  },
   // 表情包
   sticker: {
     enabled: true,
